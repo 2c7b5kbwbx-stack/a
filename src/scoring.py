@@ -82,11 +82,97 @@ def seasonality_progress(statements: pd.DataFrame, metric: str = "NetSales") -> 
     }
 
 
+def valuation_score(statements: pd.DataFrame, daily_quotes: pd.DataFrame) -> dict[str, Any]:
+    """PEG／ヒストリカルPER／配当利回りで割安度を評価する.
+
+    Lightプランは株価・財務とも直近2年分が上限のため、ヒストリカル中央値も
+    その範囲で算出する。値はあくまで開示時点の Forecast を用い、株式分割の
+    遡及調整は行わない（投資家が当時実際に観測した値を再現する）.
+
+    Returns:
+        current_per: 現在の予想PER (latest Close / ForecastEPS)
+        historical_per_median: 過去2年の予想PER中央値
+        per_below_historical: current_per < historical_per_median
+        eps_growth_rate: (今期予想EPS - 前期実績EPS) / 前期実績EPS
+        peg: current_per / (eps_growth_rate * 100). 成長率<=0 なら None
+        peg_under_one: peg < 1.0
+        current_dividend_yield: ForecastDividendPerShareAnnual / Close
+        historical_dividend_yield_mean: 過去2年の配当利回り平均
+        yield_above_historical: 現在の利回りが過去平均より高いか（下値支持シグナル）
+    """
+    if statements.empty or daily_quotes.empty:
+        raise ValueError("statements or daily_quotes is empty")
+
+    fs = statements[statements["TypeOfDocument"].str.contains("FinancialStatements", na=False)].copy()
+    fs = fs.sort_values("DisclosedDate").reset_index(drop=True)
+    if fs.empty:
+        raise ValueError("決算短信レコードが見つからない")
+
+    quotes = daily_quotes.sort_values("Date").reset_index(drop=True)
+
+    latest_stmt = fs.iloc[-1]
+    forecast_eps = _to_float(latest_stmt.get("ForecastEarningsPerShare"))
+    forecast_div = _to_float(latest_stmt.get("ForecastDividendPerShareAnnual"))
+    latest_close = _to_float(quotes.iloc[-1].get("Close"))
+
+    current_per = latest_close / forecast_eps if latest_close and forecast_eps and forecast_eps > 0 else None
+    current_div_yield = forecast_div / latest_close if latest_close and forecast_div is not None else None
+
+    fy_rows = fs[fs["TypeOfCurrentPeriod"] == "FY"]
+    prev_eps = _to_float(fy_rows.iloc[-1].get("EarningsPerShare")) if not fy_rows.empty else None
+    eps_growth_rate: float | None = None
+    if forecast_eps is not None and prev_eps and prev_eps > 0:
+        eps_growth_rate = (forecast_eps - prev_eps) / prev_eps
+
+    peg: float | None = None
+    if current_per and eps_growth_rate is not None and eps_growth_rate > 0:
+        peg = current_per / (eps_growth_rate * 100)
+
+    historical_pers: list[float] = []
+    historical_yields: list[float] = []
+    for _, row in quotes.iterrows():
+        date = row["Date"]
+        applicable = fs[fs["DisclosedDate"] <= date]
+        if applicable.empty:
+            continue
+        ref = applicable.iloc[-1]
+        close = _to_float(row.get("Close"))
+        eps = _to_float(ref.get("ForecastEarningsPerShare"))
+        div = _to_float(ref.get("ForecastDividendPerShareAnnual"))
+        if close and eps and eps > 0:
+            historical_pers.append(close / eps)
+        if close and div is not None:
+            historical_yields.append(div / close)
+
+    historical_per_median = float(pd.Series(historical_pers).median()) if historical_pers else None
+    historical_div_yield_mean = float(pd.Series(historical_yields).mean()) if historical_yields else None
+
+    return {
+        "current_per": current_per,
+        "historical_per_median": historical_per_median,
+        "per_below_historical": current_per < historical_per_median
+        if current_per is not None and historical_per_median is not None
+        else None,
+        "eps_growth_rate": eps_growth_rate,
+        "peg": peg,
+        "peg_under_one": peg is not None and peg < 1.0,
+        "current_dividend_yield": current_div_yield,
+        "historical_dividend_yield_mean": historical_div_yield_mean,
+        "yield_above_historical": current_div_yield > historical_div_yield_mean
+        if current_div_yield is not None and historical_div_yield_mean is not None
+        else None,
+    }
+
+
 if __name__ == "__main__":
     from jquants_client import JQuantsClient
 
     client = JQuantsClient()
-    stmts = client.statements(code="7203")
+    code = "7203"
+    stmts = client.statements(code=code)
+    quotes = client.daily_quotes(code=code)
+
+    print("=== Seasonality progress ===")
     for metric in ("NetSales", "OperatingProfit", "Profit"):
         try:
             result = seasonality_progress(stmts, metric=metric)
@@ -94,3 +180,9 @@ if __name__ == "__main__":
             print(f"[{metric}] skip: {exc}")
             continue
         print(f"[{metric}] {result}")
+
+    print("\n=== Valuation ===")
+    try:
+        print(valuation_score(stmts, quotes))
+    except ValueError as exc:
+        print(f"skip: {exc}")
