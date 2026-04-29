@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field
 
 load_dotenv()
 
-MODEL = "claude-opus-4-7"
+MODEL = "claude-sonnet-4-6"
 
 SYSTEM_PROMPT = """あなたは日本株のセルサイド・アナリストレポートを解析し、
 市場が織り込んでいる「期待値」を JSON で抽出する専門家です。

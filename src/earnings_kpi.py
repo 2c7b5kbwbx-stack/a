@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 
 load_dotenv()
 
-MODEL = "claude-opus-4-7"
+MODEL = "claude-sonnet-4-6"
 
 SYSTEM_PROMPT = """あなたは日本企業の決算説明資料を解析し、非財務 KPI を構造化する専門家です。
 以下のルールを厳守してください:

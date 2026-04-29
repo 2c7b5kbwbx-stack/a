@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 
 load_dotenv()
 
-MODEL = "claude-opus-4-7"
+MODEL = "claude-sonnet-4-6"
 
 SYSTEM_PROMPT = """あなたは日本株のレポート/決算説明資料を比較し、リスクファクターのトーン変化を
 抽出する専門家です。以下のルールを厳守してください:
