@@ -164,6 +164,63 @@ def valuation_score(statements: pd.DataFrame, daily_quotes: pd.DataFrame) -> dic
     }
 
 
+def revision_propensity(statements: pd.DataFrame, lookback_days: int = 30) -> dict[str, Any]:
+    """決算発表前N日以内の業績予想修正の頻度と方向性を集計する.
+
+    決算直前に上方修正を出す傾向のある銘柄は、決算サプライズの確度が高い
+    と判断する。修正方向は ForecastOperatingProfit の前回値との比較で判定.
+
+    Returns:
+        total_earnings_disclosures: 過去の決算開示件数
+        pre_earnings_revisions: 決算前N日以内に修正開示があった決算件数
+        pre_earnings_revision_rate: その比率 (0〜1)
+        upward_revisions_pre_earnings: そのうち上方修正だった件数
+        upward_pre_earnings_rate: 上方修正の比率 (0〜1)
+        lookback_days: 集計に使った日数
+    """
+    if statements.empty:
+        raise ValueError("statements is empty")
+
+    df = statements.sort_values("DisclosedDate").reset_index(drop=True)
+    earnings = df[df["TypeOfDocument"].str.contains("FinancialStatements", na=False)]
+    revisions = df[df["TypeOfDocument"].str.contains("EarnForecastRevision", na=False)]
+    if earnings.empty:
+        raise ValueError("決算短信レコードが見つからない")
+
+    pre_earnings_revisions = 0
+    upward_revisions = 0
+    for _, e_row in earnings.iterrows():
+        e_date = e_row["DisclosedDate"]
+        window_start = e_date - pd.Timedelta(days=lookback_days)
+        window_revs = revisions[
+            (revisions["DisclosedDate"] >= window_start) & (revisions["DisclosedDate"] < e_date)
+        ]
+        if window_revs.empty:
+            continue
+        pre_earnings_revisions += 1
+        last_rev = window_revs.iloc[-1]
+        new_op = _to_float(last_rev.get("ForecastOperatingProfit"))
+        prior_op: float | None = None
+        prior = df[df["DisclosedDate"] < last_rev["DisclosedDate"]]
+        for _, p_row in prior.iloc[::-1].iterrows():
+            v = _to_float(p_row.get("ForecastOperatingProfit"))
+            if v is not None:
+                prior_op = v
+                break
+        if new_op is not None and prior_op is not None and new_op > prior_op:
+            upward_revisions += 1
+
+    total_earnings = len(earnings)
+    return {
+        "total_earnings_disclosures": total_earnings,
+        "pre_earnings_revisions": pre_earnings_revisions,
+        "pre_earnings_revision_rate": pre_earnings_revisions / total_earnings,
+        "upward_revisions_pre_earnings": upward_revisions,
+        "upward_pre_earnings_rate": upward_revisions / total_earnings,
+        "lookback_days": lookback_days,
+    }
+
+
 if __name__ == "__main__":
     from jquants_client import JQuantsClient
 
@@ -184,5 +241,11 @@ if __name__ == "__main__":
     print("\n=== Valuation ===")
     try:
         print(valuation_score(stmts, quotes))
+    except ValueError as exc:
+        print(f"skip: {exc}")
+
+    print("\n=== Revision propensity ===")
+    try:
+        print(revision_propensity(stmts))
     except ValueError as exc:
         print(f"skip: {exc}")
